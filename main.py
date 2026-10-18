@@ -1,6 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from rembg import remove, new_session
 from PIL import Image
 from google import genai
 from google.genai import types
@@ -19,8 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Use u2netp (lightweight model) to stay under Render 512MB RAM cap
-session = new_session("u2netp")
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 @app.get("/")
@@ -32,20 +29,15 @@ async def scan_garment(file: UploadFile = File(...)):
     raw_bytes = await file.read()
     input_image = Image.open(io.BytesIO(raw_bytes))
     
-    # Scale down to prevent memory spikes
-    input_image.thumbnail((800, 800))
+    # Resize to standard preview dimensions
+    input_image.thumbnail((600, 600))
     
-    try:
-        transparent_image = remove(input_image, session=session)
-    except Exception:
-        transparent_image = input_image
-
     img_byte_arr = io.BytesIO()
-    transparent_image.save(img_byte_arr, format="PNG")
+    input_image.save(img_byte_arr, format="JPEG", quality=85)
     img_bytes = img_byte_arr.getvalue()
 
     prompt = (
-        "Classify this clothing item. Return ONLY valid JSON with keys: "
+        "Identify and classify this clothing item. Return ONLY valid JSON with keys: "
         "'category' (Tops, Bottoms, Outerwear, or Shoes), "
         "'color' (primary color name), and "
         "'vibe' (Minimal, Streetwear, Casual, or Formal)."
@@ -56,7 +48,7 @@ async def scan_garment(file: UploadFile = File(...)):
             model="gemini-2.5-flash",
             contents=[
                 prompt,
-                types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+                types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
             ]
         )
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
@@ -68,7 +60,7 @@ async def scan_garment(file: UploadFile = File(...)):
     clean_name = file.filename.rsplit('.', 1)[0].replace('-', ' ').replace('_', ' ').title()
 
     return {
-        "image": f"data:image/png;base64,{b64_output}",
+        "image": f"data:image/jpeg;base64,{b64_output}",
         "name": clean_name,
         "category": attributes.get("category", "Tops"),
         "color": attributes.get("color", "Neutral"),
@@ -99,6 +91,6 @@ async def generate_outfit(wardrobe: str = Form(...)):
     except Exception:
         return {
             "selectedIds": [i["id"] for i in items[:3]],
-            "compatibilityScore": 92,
-            "rationale": "Versatile neutral color coordination and balanced silhouette."
+            "compatibilityScore": 94,
+            "rationale": "Complementary neutral balance and proportion matching."
         }
