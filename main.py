@@ -1,8 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 import io
 import os
 import json
@@ -18,7 +17,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+api_key = os.environ.get("GEMINI_API_KEY")
+if api_key:
+    genai.configure(api_key=api_key)
+
+model = genai.GenerativeModel("gemini-2.5-flash")
 
 @app.get("/")
 def health_check():
@@ -28,32 +31,28 @@ def health_check():
 async def scan_garment(file: UploadFile = File(...)):
     raw_bytes = await file.read()
     input_image = Image.open(io.BytesIO(raw_bytes))
-    
-    # Resize to standard preview dimensions
     input_image.thumbnail((600, 600))
-    
+
     img_byte_arr = io.BytesIO()
     input_image.save(img_byte_arr, format="JPEG", quality=85)
     img_bytes = img_byte_arr.getvalue()
 
     prompt = (
-        "Identify and classify this clothing item. Return ONLY valid JSON with keys: "
-        "'category' (Tops, Bottoms, Outerwear, or Shoes), "
-        "'color' (primary color name), and "
-        "'vibe' (Minimal, Streetwear, Casual, or Formal)."
+        "Look at this clothing item image. Classify it strictly into one of these 4 categories: "
+        "'Tops', 'Bottoms', 'Outerwear', or 'Shoes'. "
+        "Return ONLY a raw JSON object with keys: "
+        "'category' (one of Tops, Bottoms, Outerwear, Shoes), "
+        "'color' (primary color name), "
+        "'vibe' (Minimal, Streetwear, Casual, or Formal). "
+        "Do not include markdown or backticks."
     )
 
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                prompt,
-                types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-            ]
-        )
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        attributes = json.loads(clean_json)
-    except Exception:
+        response = model.generate_content([prompt, input_image])
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        attributes = json.loads(clean_text)
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
         attributes = {"category": "Tops", "color": "Neutral", "vibe": "Casual"}
 
     b64_output = base64.b64encode(img_bytes).decode("utf-8")
@@ -71,26 +70,25 @@ async def scan_garment(file: UploadFile = File(...)):
 async def generate_outfit(wardrobe: str = Form(...)):
     items = json.loads(wardrobe)
     prompt = f"""
-    You are an expert fashion stylist. Based on this wardrobe:
+    You are an expert fashion stylist. Given this wardrobe:
     {json.dumps(items)}
-    Select 1 Top, 1 Bottom, and 1 Shoes (and optionally 1 Layer) that coordinate best.
-    Return ONLY valid JSON:
+    Pick items that make the best matching outfit.
+    Return ONLY valid JSON with keys:
     {{
-      "selectedIds": ["id1", "id2", "id3"],
+      "selectedIds": ["id1", "id2"],
       "compatibilityScore": 95,
-      "rationale": "One-sentence explanation of color harmony and silhouette pairing."
+      "rationale": "One sentence explaining why these pieces match well."
     }}
+    Do not include markdown formatting.
     """
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
-    except Exception:
+        response = model.generate_content(prompt)
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
+    except Exception as e:
+        print(f"Outfit Error: {e}")
         return {
-            "selectedIds": [i["id"] for i in items[:3]],
-            "compatibilityScore": 94,
-            "rationale": "Complementary neutral balance and proportion matching."
+            "selectedIds": [i["id"] for i in items[:2]],
+            "compatibilityScore": 92,
+            "rationale": "Clean silhouette and versatile color matching."
         }
